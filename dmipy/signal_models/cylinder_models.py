@@ -46,25 +46,33 @@ class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
            Magnetic Resonance in Medicine (2003)
     """
 
-    _required_acquisition_parameters = ['bvalues', 'gradient_directions']
+    _required_acquisition_parameters = ['bvalues', 'gradient_directions', 'TE', 'TI']
 
     _parameter_ranges = {
         'mu': ([0, np.pi], [-np.pi, np.pi]),
-        'lambda_par': (.1, 3)
+        'lambda_par': (.1, 3),
+        't2': (0.001, 0.500),
+        't1': (0.010, 5)
     }
     _parameter_scales = {
         'mu': np.r_[1., 1.],
-        'lambda_par': DIFFUSIVITY_SCALING
+        'lambda_par': DIFFUSIVITY_SCALING,
+        't2': 1.0,
+        't1': 1.0
     }
     _parameter_types = {
         'mu': 'orientation',
-        'lambda_par': 'normal'
+        'lambda_par': 'normal',
+        't2': 'normal',
+        't1': 'normal'
     }
     _model_type = 'CompartmentModel'
 
-    def __init__(self, mu=None, lambda_par=None):
+    def __init__(self, mu=None, lambda_par=None, t2=None, t1=None):
         self.mu = mu
         self.lambda_par = lambda_par
+        self.t2 = t2
+        self.t1 = t1
 
     def __call__(self, acquisition_scheme, **kwargs):
         r'''
@@ -84,12 +92,17 @@ class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
         '''
         bvals = acquisition_scheme.bvalues
         n = acquisition_scheme.gradient_directions
+        te = acquisition_scheme.TE
+        ti = acquisition_scheme.TI
 
         lambda_par_ = kwargs.get('lambda_par', self.lambda_par)
         mu = kwargs.get('mu', self.mu)
         mu = utils.unitsphere2cart_1d(mu)
+        t2_ = kwargs.get('t2', self.t2)
+        t1_ = kwargs.get('t1', self.t1)
         E_stick = _attenuation_parallel_stick(bvals, lambda_par_, n, mu)
-        return E_stick
+        S_stick = (1-2*np.exp(-ti/t1))*np.exp(-te/t2)*E_stick
+        return S_stick
 
     def spherical_mean(self, acquisition_scheme, **kwargs):
         """

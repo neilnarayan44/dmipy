@@ -19,6 +19,7 @@ A_SCALING = 1e-12
 
 __all__ = [
     'C1Stick',
+    'C1StickRelaxed',
     'C2CylinderStejskalTannerApproximation',
     'C3CylinderCallaghanApproximation',
     'C4CylinderGaussianPhaseApproximation'
@@ -26,6 +27,102 @@ __all__ = [
 
 
 class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
+    r""" The Stick model [1]_ - a cylinder with zero radius - typically used
+    for intra-axonal diffusion.
+
+    Parameters
+    ----------
+    mu : array, shape(2),
+        angles [theta, phi] representing main orientation on the sphere.
+        theta is inclination of polar angle of main angle mu [0, pi].
+        phi is polar angle of main angle mu [-pi, pi].
+    lambda_par : float,
+        parallel diffusivity in m^2/s.
+
+    References
+    ----------
+    .. [1] Behrens et al.
+           "Characterization and propagation of uncertainty in
+            diffusion-weighted MR imaging"
+           Magnetic Resonance in Medicine (2003)
+    """
+
+    _required_acquisition_parameters = ['bvalues', 'gradient_directions']
+
+    _parameter_ranges = {
+        'mu': ([0, np.pi], [-np.pi, np.pi]),
+        'lambda_par': (.1, 3)
+    }
+    _parameter_scales = {
+        'mu': np.r_[1., 1.],
+        'lambda_par': DIFFUSIVITY_SCALING
+    }
+    _parameter_types = {
+        'mu': 'orientation',
+        'lambda_par': 'normal'
+    }
+    _model_type = 'CompartmentModel'
+
+    def __init__(self, mu=None, lambda_par=None):
+        self.mu = mu
+        self.lambda_par = lambda_par
+
+    def __call__(self, acquisition_scheme, **kwargs):
+        r'''
+        Estimates the signal attenuation.
+
+        Parameters
+        ----------
+        acquisition_scheme : DmipyAcquisitionScheme instance,
+            An acquisition scheme that has been instantiated using dMipy.
+        kwargs: keyword arguments to the model parameter values,
+            Is internally given as **parameter_dictionary.
+
+        Returns
+        -------
+        attenuation : float or array, shape(N),
+            signal attenuation
+        '''
+        bvals = acquisition_scheme.bvalues
+        n = acquisition_scheme.gradient_directions
+
+        lambda_par_ = kwargs.get('lambda_par', self.lambda_par)
+        mu = kwargs.get('mu', self.mu)
+        mu = utils.unitsphere2cart_1d(mu)
+        E_stick = _attenuation_parallel_stick(bvals, lambda_par_, n, mu)
+        return E_stick
+
+    def spherical_mean(self, acquisition_scheme, **kwargs):
+        """
+        Estimates spherical mean for every shell in acquisition scheme for
+        Stick model.
+
+        Parameters
+        ----------
+        acquisition_scheme : DmipyAcquisitionScheme instance,
+            An acquisition scheme that has been instantiated using dMipy.
+        kwargs: keyword arguments to the model parameter values,
+            Is internally given as **parameter_dictionary.
+
+        Returns
+        -------
+        E_mean : array of size (Nshells)
+            spherical mean of the Stick model for every acquisition shell.
+        """
+        bvals = acquisition_scheme.shell_bvalues
+        bvals_ = bvals[~acquisition_scheme.shell_b0_mask]
+
+        lambda_par = kwargs.get('lambda_par', self.lambda_par)
+
+        E_mean = np.ones_like(bvals)
+        bval_indices_above0 = bvals > 0
+        bvals_ = bvals[bval_indices_above0]
+        E_mean_ = ((np.sqrt(np.pi) * erf(np.sqrt(bvals_ * lambda_par))) /
+                   (2 * np.sqrt(bvals_ * lambda_par)))
+        E_mean[~acquisition_scheme.shell_b0_mask] = E_mean_
+        return E_mean
+
+class C1StickRelaxed(ModelProperties, AnisotropicSignalModelProperties):
     r""" The Stick model [1]_ - a cylinder with zero radius - typically used
     for intra-axonal diffusion.
 
@@ -58,13 +155,13 @@ class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
         'mu': np.r_[1., 1.],
         'lambda_par': DIFFUSIVITY_SCALING,
         't2': 1.0,
-        't1': 1.0
+        't1': 1.0,
     }
     _parameter_types = {
         'mu': 'orientation',
         'lambda_par': 'normal',
         't2': 'normal',
-        't1': 'normal'
+        't1': 'normal',
     }
     _model_type = 'CompartmentModel'
 
@@ -73,6 +170,7 @@ class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
         self.lambda_par = lambda_par
         self.t2 = t2
         self.t1 = t1
+
 
     def __call__(self, acquisition_scheme, **kwargs):
         r'''
@@ -97,12 +195,20 @@ class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
 
         lambda_par_ = kwargs.get('lambda_par', self.lambda_par)
         mu = kwargs.get('mu', self.mu)
+
+        
         mu = utils.unitsphere2cart_1d(mu)
+
+        # Include T1 and T2 relaxation
         t2_ = kwargs.get('t2', self.t2)
         t1_ = kwargs.get('t1', self.t1)
+        tr = 7.5 # Recovery time in seconds
+        
         E_stick = _attenuation_parallel_stick(bvals, lambda_par_, n, mu)
-        S_stick = (1-2*np.exp(-ti/t1))*np.exp(-te/t2)*E_stick
+        S_stick = abs(1 - (2*np.exp(-ti/t1_)) + np.exp(-tr/t1_))*np.exp(-te/t2_)*E_stick
         return S_stick
+
+    
 
     def spherical_mean(self, acquisition_scheme, **kwargs):
         """
@@ -123,8 +229,14 @@ class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
         """
         bvals = acquisition_scheme.shell_bvalues
         bvals_ = bvals[~acquisition_scheme.shell_b0_mask]
+        te = acquisition_scheme.TE[~acquisition_scheme.shell_b0_mask]
+        ti = acquisition_scheme.TI
 
         lambda_par = kwargs.get('lambda_par', self.lambda_par)
+
+        t2_ = kwargs.get('t2', self.t2)
+        t1_ = kwargs.get('t1', self.t1)
+        tr = 7.5 # Recovery time in seconds
 
         E_mean = np.ones_like(bvals)
         bval_indices_above0 = bvals > 0
@@ -132,8 +244,9 @@ class C1Stick(ModelProperties, AnisotropicSignalModelProperties):
         E_mean_ = ((np.sqrt(np.pi) * erf(np.sqrt(bvals_ * lambda_par))) /
                    (2 * np.sqrt(bvals_ * lambda_par)))
         E_mean[~acquisition_scheme.shell_b0_mask] = E_mean_
+        S_mean = abs(1 - (2*np.exp(-ti/t1_)) + np.exp(-tr/t1_))*np.exp(-te/t2_)*E_mean
         return E_mean
-
+    
 
 class C2CylinderStejskalTannerApproximation(
         ModelProperties, AnisotropicSignalModelProperties):

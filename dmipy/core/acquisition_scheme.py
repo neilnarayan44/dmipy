@@ -41,9 +41,9 @@ class DmipyAcquisitionScheme:
     fit data using microstructure models.
     """
 
-    def __init__(self, bvalues, gradient_directions, qvalues,
-                 gradient_strengths, delta, Delta, TE,
+    def __init__(self, bvalues, gradient_directions, qvalues, gradient_strengths, delta, Delta, TE, TI,
                  min_b_shell_distance, b0_threshold):
+        
         self.min_b_shell_distance = float(min_b_shell_distance)
         self.b0_threshold = float(b0_threshold)
         self.bvalues = bvalues.astype(float)
@@ -51,25 +51,37 @@ class DmipyAcquisitionScheme:
         self.number_of_b0s = np.sum(self.b0_mask)
         self.number_of_measurements = len(self.bvalues)
         self.gradient_directions = gradient_directions.astype(float)
+        
         self.qvalues = None
         if qvalues is not None:
             self.qvalues = qvalues.astype(float)
+        
         self.gradient_strengths = None
         if gradient_strengths is not None:
             self.gradient_strengths = gradient_strengths.astype(float)
+        
         self.delta = None
         if delta is not None:
             self.delta = delta.astype(float)
+        
         self.Delta = None
         if Delta is not None:
             self.Delta = Delta.astype(float)
+        
         self.TE = None
         self.N_TE = 1  # default if not given
         if TE is not None:
             self.TE = TE.astype(float)
+            
+        self.TI = None
+        self.N_TI = 1  # default if not given
+        if TI is not None:
+            self.TI = TI.astype(float)
+        
         self.tau = None
         if self.delta is not None and self.Delta is not None:
             self.tau = Delta - delta / 3.
+        
         # if there are more then 1 measurement
         if self.number_of_measurements > 1:
             # we check if there are multiple unique delta-Delta combinations
@@ -83,9 +95,8 @@ class DmipyAcquisitionScheme:
                 deltas = np.c_[self.delta]
             else:
                 deltas = []
-
-            if deltas == []:
-                deltas = np.c_[np.zeros(len(self.bvalues))]
+                if deltas == []:
+                    deltas = np.c_[np.zeros(len(self.bvalues))]
             unique_deltas = np.unique(deltas, axis=0)
             self.shell_indices = np.zeros(len(bvalues), dtype=int)
             self.shell_bvalues = []
@@ -99,8 +110,7 @@ class DmipyAcquisitionScheme:
                 masked_bvals = bvalues[delta_mask]
                 if len(masked_bvals) > 1:
                     shell_indices_, shell_bvalues_ = (
-                        calculate_shell_bvalues_and_indices(
-                            masked_bvals, min_b_shell_distance)
+                        calculate_shell_bvalues_and_indices(masked_bvals, min_b_shell_distance)
                     )
                 else:
                     shell_indices_, shell_bvalues_ = np.array(0), masked_bvals
@@ -137,6 +147,18 @@ class DmipyAcquisitionScheme:
                     msg += "not defaulted to 0 for example."
                     raise ValueError(msg)
                 self.N_TE = len(self.shell_TE)
+            self.shell_TI = None
+            if self.TI is not None:
+                self.shell_TI = self.TI[first_indices]
+                if (len(np.unique(self.TI)) != len(np.unique(
+                        self.TI[self.b0_mask]))):
+                    msg = "Not every TI shell has b0 measurements.\n"
+                    msg += "This is required to properly normalize the signal."
+                    msg += " Make sure the TI values for b0-measurements have "
+                    msg += "not defaulted to 0 for example."
+                    raise ValueError(msg)
+                self.N_TI = len(self.shell_TI)    
+            
         # if for some reason only one measurement is given (for testing)
         else:
             self.shell_bvalues = self.bvalues
@@ -150,6 +172,7 @@ class DmipyAcquisitionScheme:
             self.shell_delta = self.delta
             self.shell_Delta = self.Delta
             self.shell_TE = TE
+            self.shell_TI = TI
 
         # calculates observation matrices to convert spherical harmonic
         # coefficients to the positions on the sphere for every shell
@@ -178,16 +201,6 @@ class DmipyAcquisitionScheme:
             msg += "acquisition design."
             warn(msg)
 
-        self.spherical_mean_scheme = SphericalMeanAcquisitionScheme(
-            self.shell_bvalues,
-            self.shell_qvalues,
-            self.shell_gradient_strengths,
-            self.shell_Delta,
-            self.shell_delta)
-        if len(self.unique_dwi_indices) > 0:
-            self.rotational_harmonics_scheme = (
-                RotationalHarmonicsAcquisitionScheme(self)
-            )
 
     @property
     def print_acquisition_info(self):
@@ -204,53 +217,37 @@ class DmipyAcquisitionScheme:
             np.sum(~self.shell_b0_mask)))
         upper_line = "shell_index |# of DWIs |bvalue [s/mm^2] "
         upper_line += "|gradient strength [mT/m] |delta [ms] |Delta[ms]"
-        upper_line += " |TE[ms]"
+        upper_line += " |TE[ms] |TI[ms]"
         print(upper_line)
         for ind in np.arange(max(self.shell_indices) + 1):
-            if (self.shell_TE is not None and
-                self.shell_delta is not None and
-                    self.shell_Delta is not None):
+            if (self.shell_TI is not None and self.shell_TE is not None and 
+                self.shell_delta is not None and self.shell_Delta is not None):
                 print(
-                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}".format(
+                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}\t|{:<5}".format(
                         str(ind), sum(self.shell_indices == ind),
                         int(self.shell_bvalues[ind] / 1e6),
                         int(1e3 * self.shell_gradient_strengths[ind]),
-                        self.shell_delta[ind] * 1e3,
-                        self.shell_Delta[ind] * 1e3, self.shell_TE[ind] * 1e3))
-            elif (self.shell_TE is None and
-                  self.shell_delta is not None and
-                    self.shell_Delta is not None):
+                        self.shell_delta[ind] * 1e3, self.shell_Delta[ind] * 1e3, 
+                        self.shell_TE[ind] * 1e3, self.shell_TI[ind] * 1e3))
+            elif (self.shell_TI is None and self.shell_TE is not None and
+                  self.shell_delta is not None and self.shell_Delta is not None):
                 print(
-                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}".format(
+                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}\t|{:<5}".format(
                         str(ind), sum(self.shell_indices == ind),
                         int(self.shell_bvalues[ind] / 1e6),
                         int(1e3 * self.shell_gradient_strengths[ind]),
-                        self.shell_delta[ind] * 1e3,
-                        self.shell_Delta[ind] * 1e3, 'N/A'))
-            elif (self.shell_TE is None and
-                  self.shell_delta is None and
-                    self.shell_Delta is not None):
+                        self.shell_delta[ind] * 1e3, self.shell_Delta[ind] * 1e3,
+                        self.shell_TE[ind] * 1e3, 'N/A'))
+            elif (self.shell_TI is None and self.shell_TE is None and
+                  self.shell_delta is not None and self.shell_Delta is not None):
                 print(
-                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}".format(
+                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}\t|{:<5}".format(
                         str(ind), sum(self.shell_indices == ind),
                         int(self.shell_bvalues[ind] / 1e6),
-                        'N/A', 'N/A', self.shell_Delta[ind] * 1e3, 'N/A'))
-            elif (self.shell_TE is None and
-                  self.shell_delta is not None and
-                    self.shell_Delta is None):
-                print(
-                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}".format(
-                        str(ind), sum(self.shell_indices == ind),
-                        int(self.shell_bvalues[ind] / 1e6),
-                        'N/A', self.shell_delta[ind] * 1e3, 'N/A', 'N/A'))
-            elif (self.shell_TE is None and
-                  self.shell_delta is None and
-                    self.shell_Delta is None):
-                print(
-                    "{:<12}|{:<10}|{:<16}|{:<25}|{:<11}|{:<10}|{:<5}".format(
-                        str(ind), sum(self.shell_indices == ind),
-                        int(self.shell_bvalues[ind] / 1e6),
-                        'N/A', 'N/A', 'N/A', 'N/A'))
+                        int(1e3 * self.shell_gradient_strengths[ind]),
+                        self.shell_delta[ind] * 1e3, self.shell_Delta[ind] * 1e3,
+                        'N/A', 'N/A'))
+
 
     def to_schemefile(self, filename):
         """
@@ -341,7 +338,7 @@ class DmipyAcquisitionScheme:
         plt.xlim(Delta_start, Delta_end)
         plt.ylim(G_start, G_end)
         cb.set_label('b-value ($s$/$mm^2$)', fontsize=18)
-        plt.xlabel(r'Pulse Separation $\Delta$ [sec]', fontsize=18)
+        plt.xlabel('Pulse Separation $\Delta$ [sec]', fontsize=18)
         plt.ylabel('Gradient Strength [T/m]', fontsize=18)
 
     def return_pruned_acquisition_scheme(self, shell_indices, data=None):
@@ -491,13 +488,11 @@ class SphericalMeanAcquisitionScheme:
         self.number_of_measurements = len(bvalues)
 
 
-def acquisition_scheme_from_bvalues(
-        bvalues, gradient_directions, delta=None, Delta=None, TE=None,
-        min_b_shell_distance=50e6, b0_threshold=10e6):
+def acquisition_scheme_from_bvalues(bvalues, gradient_directions, delta=None, Delta=None, TE=None, TI=None,
+                                    min_b_shell_distance=50e6, b0_threshold=10e6):
     r"""
     Creates an acquisition scheme object from bvalues, gradient directions,
     pulse duration $\delta$ and pulse separation time $\Delta$.
-
     Parameters
     ----------
     bvalues: 1D numpy array of shape (Ndata)
@@ -517,25 +512,21 @@ def acquisition_scheme_from_bvalues(
         for any model using spherical convolution or spherical mean.
     b0_threshold : float
         bvalue threshold for a measurement to be considered a b0 measurement.
-
     Returns
     -------
     DmipyAcquisitionScheme: acquisition scheme object
         contains all information of the acquisition scheme to be used in any
         microstructure model.
     """
-    delta_, Delta_, TE_ = unify_length_reference_delta_Delta(
-        bvalues, delta, Delta, TE)
-    check_acquisition_scheme(
-        bvalues, gradient_directions, delta_, Delta_, TE_)
+    delta_, Delta_, TE_, TI_ = unify_length_reference_delta_Delta(
+        bvalues, delta, Delta, TE, TI)
     if delta is not None and Delta is not None:
         qvalues = q_from_b(bvalues, delta_, Delta_)
         gradient_strengths = g_from_b(bvalues, delta_, Delta_)
     else:
         qvalues = gradient_strengths = None
-    return DmipyAcquisitionScheme(bvalues, gradient_directions, qvalues,
-                                  gradient_strengths, delta_, Delta_, TE_,
-                                  min_b_shell_distance, b0_threshold)
+    return DmipyAcquisitionScheme(bvalues, gradient_directions, qvalues, gradient_strengths, delta_, Delta_, TE_,
+                                  TI_, min_b_shell_distance, b0_threshold)
 
 
 def acquisition_scheme_from_qvalues(
@@ -668,11 +659,10 @@ def acquisition_scheme_from_schemefile(
         G, bvecs, delta, Delta, TE, min_b_shell_distance, b0_threshold)
 
 
-def unify_length_reference_delta_Delta(reference_array, delta, Delta, TE):
+def unify_length_reference_delta_Delta(reference_array, delta, Delta, TE, TI):
     """
     If either delta or Delta are given as float, makes them an array the same
     size as the reference array.
-
     Parameters
     ----------
     reference_array : array of size (Nsamples)
@@ -683,7 +673,6 @@ def unify_length_reference_delta_Delta(reference_array, delta, Delta, TE):
         pulse separation in seconds.
     TE : None, float or array of size (Nsamples)
         Echo time of the acquisition in seconds.
-
     Returns
     -------
     delta_ : array of size (Nsamples)
@@ -711,7 +700,13 @@ def unify_length_reference_delta_Delta(reference_array, delta, Delta, TE):
         TE_ = np.tile(TE, len(reference_array))
     else:
         TE_ = TE.copy()
-    return delta_, Delta_, TE_
+    if TI is None:
+        TI_ = TI
+    elif isinstance(TI, float) or isinstance(TI, int):
+        TI_ = np.tile(TI, len(reference_array))
+    else:
+        TI_ = TI.copy()
+    return delta_, Delta_, TE_, TI_                
 
 
 def calculate_shell_bvalues_and_indices(bvalues, max_distance=20e6):

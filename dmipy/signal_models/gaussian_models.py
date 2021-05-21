@@ -20,6 +20,7 @@ A_SCALING = 1e-12
 
 __all__ = [
     'G1Ball',
+    'G1BallRelaxed',
     'G2Zeppelin',
     'G3TemporalZeppelin'
 ]
@@ -76,6 +77,77 @@ class G1Ball(ModelProperties, IsotropicSignalModelProperties):
         lambda_iso = kwargs.get('lambda_iso', self.lambda_iso)
         E_ball = np.exp(-bvals * lambda_iso)
         return E_ball
+
+
+class G1BallRelaxed(ModelProperties, IsotropicSignalModelProperties):
+    r""" The Ball model [1]_ - an isotropic Tensor with one diffusivity.
+
+    Parameters
+    ----------
+    lambda_iso : float,
+        isotropic diffusivity in m^2/s.
+
+    References
+    ----------
+    .. [1] Behrens et al.
+           "Characterization and propagation of uncertainty in
+            diffusion-weighted MR imaging"
+           Magnetic Resonance in Medicine (2003)
+    """
+    _required_acquisition_parameters = ['bvalues', 'TE', 'TI']
+
+    _parameter_ranges = {
+        'lambda_iso': (.1, 3),
+        't2': (0.001, 0.500),
+        't1': (0.010, 5)
+    }
+    _parameter_scales = {
+        'lambda_iso': DIFFUSIVITY_SCALING,
+        't2': 1.0,
+        't1': 1.0
+    }
+    _parameter_types = {
+        'lambda_iso': 'normal',
+        't2': 'normal',
+        't1': 'normal'
+    }
+    _model_type = 'CompartmentModel'
+
+    def __init__(self, lambda_iso=None, t2=None, t1=None):
+        self.lambda_iso = lambda_iso
+        self.t2 = t2
+        self.t1 = t1
+
+    def __call__(self, acquisition_scheme, **kwargs):
+        r'''
+        Estimates the signal attenuation.
+
+        Parameters
+        ----------
+        acquisition_scheme : DmipyAcquisitionScheme instance,
+            An acquisition scheme that has been instantiated using dMipy.
+        kwargs: keyword arguments to the model parameter values,
+            Is internally given as **parameter_dictionary.
+
+        Returns
+        -------
+        attenuation : float or array, shape(N),
+            signal attenuation
+        '''
+        bvals = acquisition_scheme.bvalues
+        te = acquisition_scheme.TE
+        ti = acquisition_scheme.TI
+        
+        lambda_iso = kwargs.get('lambda_iso', self.lambda_iso)
+
+        # Include T1 and T2 relaxation
+        t2_ = kwargs.get('t2', self.t2)
+        t1_ = kwargs.get('t1', self.t1)
+        tr = 7.5 # Recovery time in seconds
+
+        E_ball = np.exp(-bvals * lambda_iso)
+        S_ball = abs(1 - (2*np.exp(-ti/t1_)) + np.exp(-tr/t1_))*np.exp(-te/t2_)*E_ball
+        return S_ball
 
 
 class G2Zeppelin(ModelProperties, AnisotropicSignalModelProperties):
